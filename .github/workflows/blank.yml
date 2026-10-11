@@ -24,19 +24,27 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle
+- name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Check Android project files
+        run: |
+          echo "Checking repository files..."
+          ls -la
+          if [ ! -f "settings.gradle" ] && [ ! -f "settings.gradle.kts" ]; then
+            echo "::error::No Gradle settings file found in the repository root."
+            exit 1
+          fi
+          if [ ! -f "build.gradle" ] && [ ! -f "build.gradle.kts" ]; then
+            echo "::error::No root Gradle build file found."
+            exit 1
+          fi
 
       - name: Build Debug APK
         id: build_apk
-        run: |
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-            ./gradlew :app:assembleDebug --no-daemon --stacktrace
-          else
-            echo "::error::gradlew is missing. Add the Gradle wrapper to the repository."
-            exit 1
-          fi
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
 
       - name: Verify APK
         id: verify_apk
