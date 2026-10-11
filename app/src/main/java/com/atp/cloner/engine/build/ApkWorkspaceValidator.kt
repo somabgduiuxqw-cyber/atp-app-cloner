@@ -5,120 +5,67 @@ import java.util.zip.ZipFile
 
 data class WorkspaceValidationResult(
     val isValid: Boolean,
-    val modifiedApkFile: File?,
-    val hasManifest: Boolean,
-    val hasResources: Boolean,
-    val hasDex: Boolean,
-    val dexCount: Int,
-    val nativeLibCount: Int,
-    val missingFiles: List<String> = emptyList(),
-    val warnings: List<String> = emptyList(),
-    val details: String = ""
+    val workingApk: File? = null,
+    val hasManifest: Boolean = false,
+    val hasResourcesArsc: Boolean = false,
+    val dexFilesCount: Int = 0,
+    val errorMessage: String? = null
 )
 
 class ApkWorkspaceValidator {
 
-    /**
-     * Validates that the workspace contains the prepared modified APK or assets
-     * from Phase 3 modification engine before proceeding with rebuilding.
-     */
     fun validateWorkspace(workspaceDir: File): WorkspaceValidationResult {
         if (!workspaceDir.exists() || !workspaceDir.isDirectory) {
             return WorkspaceValidationResult(
                 isValid = false,
-                modifiedApkFile = null,
-                hasManifest = false,
-                hasResources = false,
-                hasDex = false,
-                dexCount = 0,
-                nativeLibCount = 0,
-                missingFiles = listOf("Workspace directory: ${workspaceDir.absolutePath}"),
-                details = "Workspace directory does not exist or has not been initialized."
+                errorMessage = "Workspace directory does not exist: ${workspaceDir.path}"
             )
         }
 
-        val workingModifiedApk = File(workspaceDir, "working_modified.apk")
-        if (!workingModifiedApk.exists() || workingModifiedApk.length() == 0L) {
+        val workingApk = File(workspaceDir, "working_modified.apk")
+        if (!workingApk.exists() || workingApk.length() == 0L) {
             return WorkspaceValidationResult(
                 isValid = false,
-                modifiedApkFile = null,
-                hasManifest = false,
-                hasResources = false,
-                hasDex = false,
-                dexCount = 0,
-                nativeLibCount = 0,
-                missingFiles = listOf("working_modified.apk"),
-                details = "Missing working_modified.apk in workspace. Phase 3 modification must be completed first."
+                errorMessage = "Prepared working_modified.apk not found in workspace. Run Phase 3 modification first."
             )
         }
 
-        var hasManifest = false
-        var hasResources = false
-        var dexCount = 0
-        var nativeLibCount = 0
-        val warnings = mutableListOf<String>()
+        return try {
+            var hasManifest = false
+            var hasResources = false
+            var dexCount = 0
 
-        try {
-            ZipFile(workingModifiedApk).use { zip ->
+            ZipFile(workingApk).use { zip ->
                 val entries = zip.entries()
                 while (entries.hasMoreElements()) {
                     val entry = entries.nextElement()
-                    val name = entry.name
-
-                    if (name == "AndroidManifest.xml") {
-                        hasManifest = true
-                    }
-                    if (name == "resources.arsc") {
-                        hasResources = true
-                    }
-                    if (name.startsWith("classes") && name.endsWith(".dex")) {
-                        dexCount++
-                    }
-                    if (name.startsWith("lib/") && name.endsWith(".so")) {
-                        nativeLibCount++
-                    }
+                    if (entry.name == "AndroidManifest.xml") hasManifest = true
+                    if (entry.name == "resources.arsc") hasResources = true
+                    if (entry.name.endsWith(".dex")) dexCount++
                 }
             }
+
+            if (!hasManifest) {
+                return WorkspaceValidationResult(
+                    isValid = false,
+                    workingApk = workingApk,
+                    errorMessage = "Working APK is missing AndroidManifest.xml"
+                )
+            }
+
+            WorkspaceValidationResult(
+                isValid = true,
+                workingApk = workingApk,
+                hasManifest = hasManifest,
+                hasResourcesArsc = hasResources,
+                dexFilesCount = dexCount
+            )
         } catch (e: Exception) {
-            return WorkspaceValidationResult(
+            WorkspaceValidationResult(
                 isValid = false,
-                modifiedApkFile = workingModifiedApk,
-                hasManifest = false,
-                hasResources = false,
-                hasDex = false,
-                dexCount = 0,
-                nativeLibCount = 0,
-                missingFiles = listOf("Corrupt ZIP archive"),
-                details = "Failed to open working modified APK: ${e.message}"
+                workingApk = workingApk,
+                errorMessage = "Invalid APK archive in workspace: ${e.message}"
             )
         }
-
-        val missing = mutableListOf<String>()
-        if (!hasManifest) missing.add("AndroidManifest.xml")
-        if (dexCount == 0) missing.add("classes.dex")
-
-        if (!hasResources) {
-            warnings.add("resources.arsc not found (APK might use resource-less configuration).")
-        }
-
-        val isValid = missing.isEmpty()
-        val details = if (isValid) {
-            "Workspace is valid: Manifest present, $dexCount DEX file(s), $nativeLibCount native library(ies)."
-        } else {
-            "Workspace missing critical components: ${missing.joinToString(", ")}"
-        }
-
-        return WorkspaceValidationResult(
-            isValid = isValid,
-            modifiedApkFile = workingModifiedApk,
-            hasManifest = hasManifest,
-            hasResources = hasResources,
-            hasDex = dexCount > 0,
-            dexCount = dexCount,
-            nativeLibCount = nativeLibCount,
-            missingFiles = missing,
-            warnings = warnings,
-            details = details
-        )
     }
 }

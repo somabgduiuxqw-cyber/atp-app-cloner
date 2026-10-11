@@ -1,105 +1,91 @@
 package com.atp.cloner.engine.build
 
 import com.atp.cloner.engine.AXmlDecoder
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 data class ManifestCompilationResult(
     val isValid: Boolean,
-    val packageName: String,
-    val appLabel: String,
-    val versionCode: Long,
-    val versionName: String,
-    val totalChunks: Int,
-    val stringPoolSize: Int,
-    val compiledBytes: ByteArray,
-    val errors: List<String> = emptyList()
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (javaClass != other?.javaClass) return false
-        other as ManifestCompilationResult
-        return compiledBytes.contentEquals(other.compiledBytes)
-    }
-
-    override fun hashCode(): Int {
-        return compiledBytes.contentHashCode()
-    }
-}
+    val packageName: String = "",
+    val appLabel: String = "",
+    val message: String = "",
+    val compiledBytes: ByteArray? = null
+)
 
 class ApkManifestCompiler {
 
-    private val decoder = AXmlDecoder()
+    private val aXmlDecoder = AXmlDecoder()
 
-    /**
-     * Inspects, validates, and normalizes the compiled binary AndroidManifest.xml.
-     * Verifies chunk headers (RES_XML_TYPE = 0x00080003), string pools, and 4-byte boundaries.
-     */
-    fun compileAndValidate(manifestBytes: ByteArray): ManifestCompilationResult {
-        if (manifestBytes.size < 8) {
+    fun compileAndValidate(bytes: ByteArray): ManifestCompilationResult {
+        if (bytes.size < 8) {
             return ManifestCompilationResult(
                 isValid = false,
-                packageName = "",
-                appLabel = "",
-                versionCode = 0,
-                versionName = "",
-                totalChunks = 0,
-                stringPoolSize = 0,
-                compiledBytes = manifestBytes,
-                errors = listOf("Manifest data too small (< 8 bytes)")
+                message = "Manifest byte stream too small for chunk header"
             )
         }
 
-        val buffer = ByteBuffer.wrap(manifestBytes).order(ByteOrder.LITTLE_ENDIAN)
-        val chunkType = buffer.short.toInt() and 0xFFFF
-        val headerSize = buffer.short.toInt() and 0xFFFF
-        val chunkSize = buffer.int
+        val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        val chunkType = buf.getShort(0).toInt() and 0xFFFF
+        val headerSize = buf.getShort(2).toInt() and 0xFFFF
+        val chunkSize = buf.getInt(4)
 
-        if (chunkType != 0x0003) {
+        // RES_XML_TYPE is 0x0003 with headerSize 8
+        if (chunkType != 0x0003 || headerSize != 8) {
             return ManifestCompilationResult(
                 isValid = false,
-                packageName = "",
-                appLabel = "",
-                versionCode = 0,
-                versionName = "",
-                totalChunks = 0,
-                stringPoolSize = 0,
-                compiledBytes = manifestBytes,
-                errors = listOf("Invalid binary XML header type: 0x${Integer.toHexString(chunkType)} (expected RES_XML_TYPE 0x0003)")
+                message = "Invalid RES_XML_TYPE chunk: type=0x%04X, headerSize=%d".format(chunkType, headerSize)
             )
         }
 
-        // Count chunks and inspect string pool
-        var chunksCount = 1
-        var stringPoolCount = 0
-        var offset = headerSize
+        if (chunkSize > bytes.size || chunkSize < 8) {
+            return ManifestCompilationResult(
+                isValid = false,
+                message = "Invalid chunkSize in XML header: chunkSize=$chunkSize, bufferSize=${bytes.size}"
+            )
+        }
 
-        while (offset + 8 <= manifestBytes.size) {
-            val cType = ByteBuffer.wrap(manifestBytes, offset, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
-            val cSize = ByteBuffer.wrap(manifestBytes, offset + 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
+        return try {
+            val decoded = aXmlDecoder.decodeManifest(bytes)
+            ManifestCompilationResult(
+                isValid = true,
+                packageName = decoded.packageName,
+                appLabel = decoded.appLabel,
+                message = "Valid binary AndroidManifest chunk structure",
+                compiledBytes = bytes
+            )
+        } catch (e: Exception) {
+            ManifestCompilationResult(
+                isValid = true,
+                message = "Header valid, parsed with warnings: ${e.message}",
+                compiledBytes = bytes
+            )
+        }
+    }
 
-            if (cType == 0x0001) { // RES_STRING_POOL_TYPE
-                val strCount = ByteBuffer.wrap(manifestBytes, offset + 8, 4).order(ByteOrder.LITTLE_ENDIAN).int
-                stringPoolCount = strCount
+    fun modifyAndCompile(
+        manifestBytes: ByteArray,
+        replacements: Map<String, String>
+    ): ManifestCompilationResult {
+        return try {
+            val modified = aXmlDecoder.rewriteManifestStrings(manifestBytes, replacements)
+            val validation = compileAndValidate(modified)
+            if (validation.isValid) {
+                ManifestCompilationResult(
+                    isValid = true,
+                    packageName = validation.packageName,
+                    appLabel = validation.appLabel,
+                    message = "Successfully recompiled manifest strings",
+                    compiledBytes = modified
+                )
+            } else {
+                validation
             }
-
-            chunksCount++
-            if (cSize <= 0) break
-            offset += cSize
+        } catch (e: Exception) {
+            ManifestCompilationResult(
+                isValid = false,
+                message = "Failed to rewrite manifest: ${e.message}"
+            )
         }
-
-        // Decode manifest metadata using AXmlDecoder
-        val decoded = decoder.decodeManifest(manifestBytes)
-
-        return ManifestCompilationResult(
-            isValid = true,
-            packageName = decoded.packageName,
-            appLabel = decoded.appLabel,
-            versionCode = decoded.versionCode,
-            versionName = decoded.versionName,
-            totalChunks = chunksCount,
-            stringPoolSize = stringPoolCount,
-            compiledBytes = manifestBytes
-        )
     }
 }

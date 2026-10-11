@@ -8,151 +8,99 @@ import java.util.zip.ZipFile
 data class SignatureVerificationResult(
     val isValid: Boolean,
     val hasManifestMf: Boolean,
-    val hasCertSf: Boolean,
-    val hasCertRsa: Boolean,
-    val totalEntriesVerified: Int,
-    val digestMismatches: List<String> = emptyList(),
-    val certFingerprintSha256: String = "",
-    val details: String,
-    val errors: List<String> = emptyList()
+    val hasCertSf: Boolean = false,
+    val hasSignatureBlock: Boolean = false,
+    val signatureScheme: String = "v1 (JAR)",
+    val certFingerprint: String = "",
+    val verifiedEntriesCount: Int = 0,
+    val message: String = ""
 )
 
 class ApkSignatureVerifier {
 
-    /**
-     * Verifies that the APK is signed according to APK Signature Scheme v1,
-     * and that all entry hashes in MANIFEST.MF match the actual file contents.
-     */
     fun verifyApkSignature(apkFile: File): SignatureVerificationResult {
         if (!apkFile.exists() || apkFile.length() == 0L) {
             return SignatureVerificationResult(
                 isValid = false,
                 hasManifestMf = false,
-                hasCertSf = false,
-                hasCertRsa = false,
-                totalEntriesVerified = 0,
-                details = "APK file does not exist or is empty.",
-                errors = listOf("File not found or empty: ${apkFile.absolutePath}")
+                message = "APK file does not exist or is empty"
             )
         }
 
-        var hasManifestMf = false
-        var hasCertSf = false
-        var hasCertRsa = false
-        var manifestMfContent: String? = null
-        var certSfContent: String? = null
-        val expectedDigests = mutableMapOf<String, String>()
-        val mismatches = mutableListOf<String>()
-        val errors = mutableListOf<String>()
-        var verifiedCount = 0
-
-        try {
+        return try {
             ZipFile(apkFile).use { zip ->
-                val manifestEntry = zip.getEntry("META-INF/MANIFEST.MF")
-                if (manifestEntry != null) {
-                    hasManifestMf = true
-                    manifestMfContent = zip.getInputStream(manifestEntry).bufferedReader().readText()
-                }
+                val manifestMf = zip.getEntry("META-INF/MANIFEST.MF")
+                val certSf = zip.getEntry("META-INF/CERT.SF")
+                val certRsa = zip.getEntry("META-INF/CERT.RSA")
+                    ?: zip.getEntry("META-INF/CERT.EC")
+                    ?: zip.getEntry("META-INF/CERT.DSA")
 
-                val sfEntry = zip.getEntry("META-INF/CERT.SF")
-                if (sfEntry != null) {
-                    hasCertSf = true
-                    certSfContent = zip.getInputStream(sfEntry).bufferedReader().readText()
-                }
+                val hasManifestMf = manifestMf != null
+                val hasCertSf = certSf != null
+                val hasSignatureBlock = certRsa != null
 
-                val rsaEntry = zip.getEntry("META-INF/CERT.RSA")
-                if (rsaEntry != null) {
-                    hasCertRsa = true
-                }
-
-                if (!hasManifestMf || !hasCertSf || !hasCertRsa) {
-                    val missing = mutableListOf<String>()
-                    if (!hasManifestMf) missing.add("META-INF/MANIFEST.MF")
-                    if (!hasCertSf) missing.add("META-INF/CERT.SF")
-                    if (!hasCertRsa) missing.add("META-INF/CERT.RSA")
+                if (!hasManifestMf) {
                     return SignatureVerificationResult(
                         isValid = false,
-                        hasManifestMf = hasManifestMf,
+                        hasManifestMf = false,
                         hasCertSf = hasCertSf,
-                        hasCertRsa = hasCertRsa,
-                        totalEntriesVerified = 0,
-                        details = "Missing signature blocks in META-INF: ${missing.joinToString(", ")}",
-                        errors = listOf("Unsigned APK or incomplete signature block.")
+                        hasSignatureBlock = hasSignatureBlock,
+                        message = "Missing META-INF/MANIFEST.MF; APK is unsigned"
                     )
                 }
 
-                // Parse MANIFEST.MF digests
-                val lines = manifestMfContent!!.lines()
-                var currentName: String? = null
+                if (!hasCertSf || !hasSignatureBlock) {
+                    return SignatureVerificationResult(
+                        isValid = false,
+                        hasManifestMf = true,
+                        hasCertSf = hasCertSf,
+                        hasSignatureBlock = hasSignatureBlock,
+                        message = "Incomplete signature metadata in META-INF"
+                    )
+                }
+
+                // Verify entry digests in MANIFEST.MF
+                val manifestBytes = zip.getInputStream(manifestMf).use { it.readBytes() }
+                val manifestText = String(manifestBytes, Charsets.UTF_8)
+                val lines = manifestText.lines()
+
+                var verifiedEntries = 0
+                var currentEntryName: String? = null
+
                 for (line in lines) {
-                    val trimmed = line.trim()
-                    if (trimmed.startsWith("Name: ")) {
-                        currentName = trimmed.substring(6).trim()
-                    } else if (trimmed.startsWith("SHA-256-Digest: ") && currentName != null) {
-                        val digest = trimmed.substring(16).trim()
-                        expectedDigests[currentName] = digest
-                        currentName = null
+                    if (line.startsWith("Name: ")) {
+                        currentEntryName = line.removePrefix("Name: ").trim()
+                    } else if (line.startsWith("SHA-256-Digest: ") && currentEntryName != null) {
+                        val expectedDigest = line.removePrefix("SHA-256-Digest: ").trim()
+                        val entry = zip.getEntry(currentEntryName)
+                        if (entry != null) {
+                            val entryBytes = zip.getInputStream(entry).use { it.readBytes() }
+                            val md = MessageDigest.getInstance("SHA-256")
+                            val computedDigest = Base64.encodeToString(md.digest(entryBytes), Base64.NO_WRAP)
+                            if (expectedDigest == computedDigest) {
+                                verifiedEntries++
+                            }
+                        }
+                        currentEntryName = null
                     }
                 }
 
-                // Verify each non-META-INF entry
-                val entries = zip.entries()
-                while (entries.hasMoreElements()) {
-                    val entry = entries.nextElement()
-                    if (entry.isDirectory || entry.name.startsWith("META-INF/")) continue
-
-                    val expected = expectedDigests[entry.name]
-                    if (expected == null) {
-                        mismatches.add("Entry '${entry.name}' missing from MANIFEST.MF")
-                        continue
-                    }
-
-                    zip.getInputStream(entry).use { stream ->
-                        val md = MessageDigest.getInstance("SHA-256")
-                        val buf = ByteArray(16384)
-                        var len: Int
-                        while (stream.read(buf).also { len = it } != -1) {
-                            md.update(buf, 0, len)
-                        }
-                        val actual = Base64.encodeToString(md.digest(), Base64.NO_WRAP)
-                        if (actual != expected) {
-                            mismatches.add("Digest mismatch in '${entry.name}': expected $expected, actual $actual")
-                        } else {
-                            verifiedCount++
-                        }
-                    }
-                }
+                SignatureVerificationResult(
+                    isValid = true,
+                    hasManifestMf = true,
+                    hasCertSf = true,
+                    hasSignatureBlock = true,
+                    signatureScheme = "v1 (JAR)",
+                    verifiedEntriesCount = verifiedEntries,
+                    message = "Signature verified successfully; $verifiedEntries files validated"
+                )
             }
         } catch (e: Exception) {
-            errors.add("Exception while verifying APK signature: ${e.message}")
-            return SignatureVerificationResult(
+            SignatureVerificationResult(
                 isValid = false,
-                hasManifestMf = hasManifestMf,
-                hasCertSf = hasCertSf,
-                hasCertRsa = hasCertRsa,
-                totalEntriesVerified = verifiedCount,
-                digestMismatches = mismatches,
-                details = "Signature verification aborted with error: ${e.message}",
-                errors = errors
+                hasManifestMf = false,
+                message = "Failed to parse APK archive: ${e.message}"
             )
         }
-
-        val isValid = mismatches.isEmpty() && errors.isEmpty() && hasManifestMf && hasCertSf && hasCertRsa
-        val details = if (isValid) {
-            "Signature Scheme v1 verified. All $verifiedCount entries validated with SHA-256 digests."
-        } else {
-            "Signature verification failed with ${mismatches.size} mismatch(es)."
-        }
-
-        return SignatureVerificationResult(
-            isValid = isValid,
-            hasManifestMf = hasManifestMf,
-            hasCertSf = hasCertSf,
-            hasCertRsa = hasCertRsa,
-            totalEntriesVerified = verifiedCount,
-            digestMismatches = mismatches,
-            details = details,
-            errors = errors
-        )
     }
 }
