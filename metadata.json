@@ -1,0 +1,6 @@
+{
+  "name": "ATP App Cloner",
+  "description": "Professional offline APK customization engine by ATP Network. Customizes application names, package identifiers, and launcher icons with local rebuilding, alignment, and cryptographic signing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
