@@ -1,0 +1,131 @@
+name: Build and Publish Debug APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ATP App Cloner
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Debug APK
+        id: build_apk
+        run: |
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew :app:assembleDebug --no-daemon --stacktrace
+          else
+            echo "::error::gradlew is missing. Add the Gradle wrapper to the repository."
+            exit 1
+          fi
+
+      - name: Verify APK
+        id: verify_apk
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -s "$APK" ]; then
+            echo "::error::APK not found or empty: $APK"
+            find . -type f -name "*.apk" -print
+            exit 1
+          fi
+
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+          echo "apk_size=$(stat -c '%s' "$APK")" >> "$GITHUB_OUTPUT"
+          echo "apk_sha256=$(sha256sum "$APK" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: atp-app-cloner-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Prepare Release Asset
+        id: prepare_asset
+        env:
+          REPOSITORY: ${{ github.repository }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          REPO_NAME="${REPOSITORY#*/}"
+          ASSET_NAME="${REPO_NAME}-debug-build-${RUN_NUMBER}.apk"
+          ASSET_PATH="$RUNNER_TEMP/$ASSET_NAME"
+
+          cp "${{ steps.verify_apk.outputs.apk_path }}" "$ASSET_PATH"
+
+          echo "asset_name=$ASSET_NAME" >> "$GITHUB_OUTPUT"
+          echo "asset_path=$ASSET_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        id: publish_release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          ASSET_PATH: ${{ steps.prepare_asset.outputs.asset_path }}
+        run: |
+          TAG="debug-apk-build-${RUN_NUMBER}-${RUN_ATTEMPT}"
+
+          gh release create "$TAG" "$ASSET_PATH" \
+            --repo "$REPOSITORY" \
+            --title "ATP App Cloner Debug Build ${RUN_NUMBER}" \
+            --notes "Automated debug APK build from commit ${GITHUB_SHA}." \
+            --target "$GITHUB_SHA"
+
+      - name: Build Summary
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build_apk.outcome }}
+          APK_SIZE: ${{ steps.verify_apk.outputs.apk_size }}
+          APK_SHA256: ${{ steps.verify_apk.outputs.apk_sha256 }}
+          RELEASE_OUTCOME: ${{ steps.publish_release.outcome }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          ASSET_NAME: ${{ steps.prepare_asset.outputs.asset_name }}
+        run: |
+          {
+            echo "## ATP App Cloner Debug APK"
+            echo ""
+            echo "- Build status: ${BUILD_OUTCOME:-not completed}"
+            echo "- APK size: ${APK_SIZE:-unknown} bytes"
+            echo "- SHA-256: ${APK_SHA256:-unavailable}"
+            echo "- Release status: ${RELEASE_OUTCOME:-not completed}"
+
+            if [ "$BUILD_OUTCOME" = "success" ]; then
+              echo ""
+              echo "APK built and uploaded as a workflow artifact."
+            fi
+
+            if [ "$RELEASE_OUTCOME" = "success" ]; then
+              TAG="debug-apk-build-${RUN_NUMBER}-${RUN_ATTEMPT}"
+              echo ""
+              echo "Release: https://github.com/${REPOSITORY}/releases/tag/${TAG}"
+              echo "Asset: ${ASSET_NAME}"
+            elif [ "$BUILD_OUTCOME" = "success" ]; then
+              echo ""
+              echo "Release publishing failed. Download the APK from the Actions artifact."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
