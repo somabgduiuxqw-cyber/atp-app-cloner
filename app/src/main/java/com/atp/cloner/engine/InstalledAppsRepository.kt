@@ -35,14 +35,52 @@ class InstalledAppsRepository(private val context: Context) {
                 PackageManager.GET_META_DATA
             }
 
-            val installedPackages: List<PackageInfo> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                packageManager.getInstalledPackages(PackageManager.PackageInfoFlags.of(0))
-            } else {
-                @Suppress("DEPRECATION")
-                packageManager.getInstalledPackages(0)
+            val packageMap = mutableMapOf<String, PackageInfo>()
+
+            val installedPackages: List<PackageInfo> = try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    packageManager.getInstalledPackages(PackageManager.PackageInfoFlags.of(0))
+                } else {
+                    @Suppress("DEPRECATION")
+                    packageManager.getInstalledPackages(0)
+                }
+            } catch (e: Exception) {
+                emptyList()
             }
 
-            for (pkgInfo in installedPackages) {
+            for (pkg in installedPackages) {
+                val name = pkg.packageName ?: continue
+                packageMap[name] = pkg
+            }
+
+            // Supplement with launcher intent queries for Android 11+ visibility
+            try {
+                val launcherIntent = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+                    addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                }
+                val resolveInfos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    packageManager.queryIntentActivities(launcherIntent, PackageManager.ResolveInfoFlags.of(0))
+                } else {
+                    @Suppress("DEPRECATION")
+                    packageManager.queryIntentActivities(launcherIntent, 0)
+                }
+
+                for (resolve in resolveInfos) {
+                    val pkgName = resolve.activityInfo?.packageName ?: continue
+                    if (pkgName == selfPackageName || packageMap.containsKey(pkgName)) continue
+                    try {
+                        val pInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            packageManager.getPackageInfo(pkgName, PackageManager.PackageInfoFlags.of(0))
+                        } else {
+                            @Suppress("DEPRECATION")
+                            packageManager.getPackageInfo(pkgName, 0)
+                        }
+                        packageMap[pkgName] = pInfo
+                    } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {}
+
+            for (pkgInfo in packageMap.values) {
                 val pkgName = pkgInfo.packageName ?: continue
 
                 // Exclude self by default
@@ -127,8 +165,8 @@ class InstalledAppsRepository(private val context: Context) {
             val bitmap = if (drawable is BitmapDrawable && drawable.bitmap != null) {
                 drawable.bitmap
             } else {
-                val width = drawable.intrinsicWidth.coerceAtLeast(1).coerceAtMost(192)
-                val height = drawable.intrinsicHeight.coerceAtLeast(1).coerceAtMost(192)
+                val width = if (drawable.intrinsicWidth > 0) drawable.intrinsicWidth.coerceAtMost(192) else 96
+                val height = if (drawable.intrinsicHeight > 0) drawable.intrinsicHeight.coerceAtMost(192) else 96
                 val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(bmp)
                 drawable.setBounds(0, 0, canvas.width, canvas.height)

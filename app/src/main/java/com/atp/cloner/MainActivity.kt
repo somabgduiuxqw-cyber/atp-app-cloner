@@ -163,6 +163,8 @@ fun MainAppContent(viewModel: MainViewModel) {
                     onBack = { viewModel.navigateTo(Screen.HOME) },
                     onManualImportFallback = { viewModel.navigateTo(Screen.IMPORT) },
                     isProcessing = isProcessing,
+                    extractionError = errorMessage,
+                    onClearExtractionError = { viewModel.clearError() },
                     modifier = Modifier.padding(innerPadding)
                 )
             }

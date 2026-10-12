@@ -41,7 +41,7 @@ class ApkExtractionService(private val context: Context) {
             }
 
             val sourceApk = File(appInfo.apkPath)
-            if (!sourceApk.exists() || !sourceApk.canRead()) {
+            if (!sourceApk.exists()) {
                 return@withContext ExtractionResult(
                     success = false,
                     extractedApkFile = null,
@@ -49,7 +49,7 @@ class ApkExtractionService(private val context: Context) {
                     fileSize = 0L,
                     isSplitApk = appInfo.isSplitApk,
                     splitNames = appInfo.splitNames,
-                    errorMessage = "Access to source APK blocked by system permissions for ${appInfo.packageName}. Try manual APK import."
+                    errorMessage = "Source APK file not found at ${appInfo.apkPath} for ${appInfo.packageName}."
                 )
             }
 
@@ -60,14 +60,36 @@ class ApkExtractionService(private val context: Context) {
             val targetApk = File(destinationDirectory, "original.apk")
 
             // Copy APK safely to app's isolated private workspace
-            FileInputStream(sourceApk).use { input ->
-                FileOutputStream(targetApk).use { output ->
-                    val buffer = ByteArray(65536)
-                    var bytesRead: Int
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
+            try {
+                FileInputStream(sourceApk).use { input ->
+                    FileOutputStream(targetApk).use { output ->
+                        val buffer = ByteArray(65536)
+                        var bytesRead: Int
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            output.write(buffer, 0, bytesRead)
+                        }
                     }
                 }
+            } catch (se: SecurityException) {
+                return@withContext ExtractionResult(
+                    success = false,
+                    extractedApkFile = null,
+                    sha256Checksum = "",
+                    fileSize = 0L,
+                    isSplitApk = appInfo.isSplitApk,
+                    splitNames = appInfo.splitNames,
+                    errorMessage = "Access to source APK blocked by system security policy for ${appInfo.packageName}. Try manual APK import."
+                )
+            } catch (ioe: java.io.IOException) {
+                return@withContext ExtractionResult(
+                    success = false,
+                    extractedApkFile = null,
+                    sha256Checksum = "",
+                    fileSize = 0L,
+                    isSplitApk = appInfo.isSplitApk,
+                    splitNames = appInfo.splitNames,
+                    errorMessage = "Failed reading APK (${ioe.localizedMessage ?: "Permission denied"}). Try manual APK import."
+                )
             }
 
             // Verify copied file exists and is readable

@@ -25,11 +25,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SortByAlpha
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -40,13 +42,17 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -72,6 +78,8 @@ fun InstalledAppsScreen(
     onBack: () -> Unit,
     onManualImportFallback: () -> Unit,
     isProcessing: Boolean = false,
+    extractionError: String? = null,
+    onClearExtractionError: () -> Unit = {},
     viewModel: InstalledAppsViewModel = viewModel(),
     modifier: Modifier = Modifier
 ) {
@@ -79,6 +87,57 @@ fun InstalledAppsScreen(
     val searchQuery by viewModel.searchQuery.collectAsState()
     val includeSystemApps by viewModel.includeSystemApps.collectAsState()
     val sortAscending by viewModel.sortAscending.collectAsState()
+    var pendingSplitApp by remember { mutableStateOf<InstalledAppInfo?>(null) }
+    var showPermissionInfo by remember { mutableStateOf(false) }
+
+    // Split APK Notice Dialog
+    if (pendingSplitApp != null) {
+        val app = pendingSplitApp!!
+        AlertDialog(
+            onDismissRequest = { pendingSplitApp = null },
+            icon = {
+                Icon(Icons.Default.Layers, contentDescription = null, tint = AtpPrimaryBlue)
+            },
+            title = {
+                Text("Split APK Application Detected", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "\"${app.appName}\" uses Android App Bundles with ${app.splitCount} split APKs (${app.splitNames.take(3).joinToString(", ")}${if (app.splitNames.size > 3) "..." else ""}).",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "ATP App Cloner will extract the primary base APK containing the application code and manifest. Standalone cloning works reliably for core app features, while device-specific configurations remain in external splits.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val selected = pendingSplitApp!!
+                        pendingSplitApp = null
+                        onSelectApp(selected)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AtpPrimaryBlue),
+                    modifier = Modifier.testTag("confirm_split_apk_extraction_button")
+                ) {
+                    Text("Proceed with Base APK")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingSplitApp = null },
+                    modifier = Modifier.testTag("cancel_split_apk_dialog_button")
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     Column(
         modifier = modifier
@@ -190,6 +249,76 @@ fun InstalledAppsScreen(
                         contentDescription = "Sort order",
                         tint = if (sortAscending) AtpPrimaryBlue else MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+        }
+
+        // Extraction Error Banner with troubleshooting guide
+        if (extractionError != null) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                    .testTag("extraction_error_banner"),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "APK Extraction Error",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = extractionError,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "Troubleshooting Guidance:\n• Android security restrictions or SELinux policies prevent reading protected APKs directly from /data/app/.\n• System apps or Knox-protected apps cannot be extracted without privileged rights.\n• You can use the manual APK import button below to pick an APK file already stored on your device or transferred via ADB.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f),
+                        lineHeight = 16.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = onManualImportFallback,
+                            colors = ButtonDefaults.buttonColors(containerColor = AtpPrimaryBlue),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.testTag("error_manual_import_button")
+                        ) {
+                            Text("Import APK File Manually")
+                        }
+
+                        OutlinedButton(
+                            onClick = onClearExtractionError,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.testTag("dismiss_extraction_error_button")
+                        ) {
+                            Text("Dismiss")
+                        }
+                    }
                 }
             }
         }
@@ -318,7 +447,13 @@ fun InstalledAppsScreen(
                         items(state.apps, key = { it.packageName }) { app ->
                             InstalledAppItemCard(
                                 app = app,
-                                onSelect = { onSelectApp(app) }
+                                onSelect = {
+                                    if (app.isSplitApk) {
+                                        pendingSplitApp = app
+                                    } else {
+                                        onSelectApp(app)
+                                    }
+                                }
                             )
                         }
                     }
