@@ -27,7 +27,7 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.11.1'
+          gradle-version: '9.3.1'
 
       - name: Check Android project
         shell: bash
@@ -49,6 +49,23 @@ jobs:
           if [ ! -f "app/build.gradle" ] && [ ! -f "app/build.gradle.kts" ]; then
             echo "::error::Missing app/build.gradle or app/build.gradle.kts."
             exit 1
+          fi
+
+      - name: Ensure debug keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f "debug.keystore" ]; then
+            echo "Generating debug.keystore..."
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000
           fi
 
       - name: Build Debug APK
