@@ -56,6 +56,7 @@ fun ImportScreen(
     errorMessage: String?,
     onImportFile: (Uri, String) -> Unit,
     onLoadSample: () -> Unit,
+    onNavigateToInstalledApps: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -211,7 +212,22 @@ fun ImportScreen(
                     ) {
                         Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Choose APK", fontWeight = FontWeight.Bold)
+                        Text("Choose APK File", fontWeight = FontWeight.Bold)
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedButton(
+                        onClick = onNavigateToInstalledApps,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("import_from_installed_apps_button")
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Select from Installed Apps", fontWeight = FontWeight.SemiBold)
                     }
                 }
             }

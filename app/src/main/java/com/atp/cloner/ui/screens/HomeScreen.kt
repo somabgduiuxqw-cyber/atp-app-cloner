@@ -169,18 +169,34 @@ fun HomeScreen(
                                 color = Color.White.copy(alpha = 0.85f)
                             )
                             Spacer(modifier = Modifier.height(16.dp))
-                            Button(
-                                onClick = { onNavigate(Screen.IMPORT) },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color.White,
-                                    contentColor = AtpStrongBlue
-                                ),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.testTag("hero_import_button")
-                            ) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Import APK", fontWeight = FontWeight.Bold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { onNavigate(Screen.IMPORT) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color.White,
+                                        contentColor = AtpStrongBlue
+                                    ),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.testTag("hero_import_button")
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Import APK", fontWeight = FontWeight.Bold)
+                                }
+
+                                Button(
+                                    onClick = { onNavigate(Screen.INSTALLED_APPS) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color.White.copy(alpha = 0.2f),
+                                        contentColor = Color.White
+                                    ),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.testTag("hero_installed_apps_button")
+                                ) {
+                                    Icon(Icons.Default.PhoneAndroid, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Installed Apps", fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
 

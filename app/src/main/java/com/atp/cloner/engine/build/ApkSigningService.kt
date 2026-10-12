@@ -4,52 +4,41 @@ import android.content.Context
 import com.atp.cloner.engine.ApkSignerEngine
 import java.io.File
 
-data class SigningServiceResult(
-    val success: Boolean,
-    val algorithm: String = "SHA256withRSA",
-    val certFingerprint: String = "",
-    val signedApk: File? = null,
-    val errorMessage: String? = null
-)
+class ApkSigningService(private val context: Context) {
 
-class ApkSigningService(private val context: Context? = null) {
+    private val signerEngine = ApkSignerEngine(context)
 
-    private val signerEngine = if (context != null) ApkSignerEngine(context) else null
-    private val keyManagement = KeyManagementService(context)
+    data class SigningOutput(
+        val success: Boolean,
+        val signedApkFile: File?,
+        val certFingerprint: String,
+        val algorithm: String = "SHA256withRSA",
+        val errorMessage: String? = null
+    )
 
-    fun signApk(unsignedApk: File, signedOutputApk: File): SigningServiceResult {
+    fun signApk(unsignedApkFile: File, outputSignedFile: File): SigningOutput {
         return try {
-            if (signerEngine != null) {
-                val res = signerEngine.signApk(unsignedApk, signedOutputApk)
-                if (res.success && res.signedFile != null) {
-                    SigningServiceResult(
-                        success = true,
-                        algorithm = "SHA256withRSA",
-                        certFingerprint = res.certFingerprintSha256,
-                        signedApk = res.signedFile
-                    )
-                } else {
-                    SigningServiceResult(
-                        success = false,
-                        errorMessage = res.errorMessage ?: "Failed to sign APK"
-                    )
-                }
-            } else {
-                // Fallback for standalone / JVM testing
-                val (keyPair, fingerprint) = keyManagement.getOrGenerateKeyPair()
-                // Simple pass-through or copy with dummy signing for test env
-                unsignedApk.copyTo(signedOutputApk, overwrite = true)
-                SigningServiceResult(
+            val result = signerEngine.signApk(unsignedApkFile, outputSignedFile)
+            if (result.success && outputSignedFile.exists() && outputSignedFile.length() > 0) {
+                SigningOutput(
                     success = true,
-                    algorithm = "SHA256withRSA",
-                    certFingerprint = fingerprint,
-                    signedApk = signedOutputApk
+                    signedApkFile = outputSignedFile,
+                    certFingerprint = result.certFingerprintSha256
+                )
+            } else {
+                SigningOutput(
+                    success = false,
+                    signedApkFile = null,
+                    certFingerprint = "",
+                    errorMessage = result.errorMessage ?: "Failed to sign APK"
                 )
             }
         } catch (e: Exception) {
-            SigningServiceResult(
+            SigningOutput(
                 success = false,
-                errorMessage = "Signing exception: ${e.message}"
+                signedApkFile = null,
+                certFingerprint = "",
+                errorMessage = e.message
             )
         }
     }

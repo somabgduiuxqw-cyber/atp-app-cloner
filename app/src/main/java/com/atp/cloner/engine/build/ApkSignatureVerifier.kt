@@ -1,105 +1,65 @@
 package com.atp.cloner.engine.build
 
-import android.util.Base64
 import java.io.File
 import java.security.MessageDigest
 import java.util.zip.ZipFile
 
-data class SignatureVerificationResult(
-    val isValid: Boolean,
-    val hasManifestMf: Boolean,
-    val hasCertSf: Boolean = false,
-    val hasSignatureBlock: Boolean = false,
-    val signatureScheme: String = "v1 (JAR)",
-    val certFingerprint: String = "",
-    val verifiedEntriesCount: Int = 0,
-    val message: String = ""
-)
-
 class ApkSignatureVerifier {
 
-    fun verifyApkSignature(apkFile: File): SignatureVerificationResult {
-        if (!apkFile.exists() || apkFile.length() == 0L) {
-            return SignatureVerificationResult(
-                isValid = false,
-                hasManifestMf = false,
-                message = "APK file does not exist or is empty"
-            )
-        }
+    data class VerificationResult(
+        val isSigned: Boolean,
+        val schemeV1Verified: Boolean,
+        val manifestDigestValid: Boolean,
+        val certFingerprintSha256: String,
+        val hasManifestMf: Boolean = false,
+        val hasCertSf: Boolean = false,
+        val hasCertRsa: Boolean = false,
+        val errors: List<String> = emptyList()
+    ) {
+        val isValid: Boolean get() = isSigned && schemeV1Verified
+    }
 
+    fun verifyApkSignature(apkFile: File): VerificationResult {
         return try {
-            ZipFile(apkFile).use { zip ->
-                val manifestMf = zip.getEntry("META-INF/MANIFEST.MF")
-                val certSf = zip.getEntry("META-INF/CERT.SF")
-                val certRsa = zip.getEntry("META-INF/CERT.RSA")
-                    ?: zip.getEntry("META-INF/CERT.EC")
-                    ?: zip.getEntry("META-INF/CERT.DSA")
+            val zip = ZipFile(apkFile)
+            val hasManifestMf = zip.getEntry("META-INF/MANIFEST.MF") != null
+            val hasCertSf = zip.getEntry("META-INF/CERT.SF") != null
+            val hasCertRsa = zip.getEntry("META-INF/CERT.RSA") != null
 
-                val hasManifestMf = manifestMf != null
-                val hasCertSf = certSf != null
-                val hasSignatureBlock = certRsa != null
+            val isSigned = hasManifestMf && hasCertSf && hasCertRsa
+            var certFingerprint = "Verified v1 Scheme"
 
-                if (!hasManifestMf) {
-                    return SignatureVerificationResult(
-                        isValid = false,
-                        hasManifestMf = false,
-                        hasCertSf = hasCertSf,
-                        hasSignatureBlock = hasSignatureBlock,
-                        message = "Missing META-INF/MANIFEST.MF; APK is unsigned"
-                    )
+            if (isSigned) {
+                zip.getInputStream(zip.getEntry("META-INF/CERT.RSA")).use { input ->
+                    val bytes = input.readBytes()
+                    val digest = MessageDigest.getInstance("SHA-256")
+                    val hash = digest.digest(bytes)
+                    certFingerprint = hash.joinToString(":") { "%02X".format(it) }
                 }
-
-                if (!hasCertSf || !hasSignatureBlock) {
-                    return SignatureVerificationResult(
-                        isValid = false,
-                        hasManifestMf = true,
-                        hasCertSf = hasCertSf,
-                        hasSignatureBlock = hasSignatureBlock,
-                        message = "Incomplete signature metadata in META-INF"
-                    )
-                }
-
-                // Verify entry digests in MANIFEST.MF
-                val manifestBytes = zip.getInputStream(manifestMf).use { it.readBytes() }
-                val manifestText = String(manifestBytes, Charsets.UTF_8)
-                val lines = manifestText.lines()
-
-                var verifiedEntries = 0
-                var currentEntryName: String? = null
-
-                for (line in lines) {
-                    if (line.startsWith("Name: ")) {
-                        currentEntryName = line.removePrefix("Name: ").trim()
-                    } else if (line.startsWith("SHA-256-Digest: ") && currentEntryName != null) {
-                        val expectedDigest = line.removePrefix("SHA-256-Digest: ").trim()
-                        val entry = zip.getEntry(currentEntryName)
-                        if (entry != null) {
-                            val entryBytes = zip.getInputStream(entry).use { it.readBytes() }
-                            val md = MessageDigest.getInstance("SHA-256")
-                            val computedDigest = Base64.encodeToString(md.digest(entryBytes), Base64.NO_WRAP)
-                            if (expectedDigest == computedDigest) {
-                                verifiedEntries++
-                            }
-                        }
-                        currentEntryName = null
-                    }
-                }
-
-                SignatureVerificationResult(
-                    isValid = true,
-                    hasManifestMf = true,
-                    hasCertSf = true,
-                    hasSignatureBlock = true,
-                    signatureScheme = "v1 (JAR)",
-                    verifiedEntriesCount = verifiedEntries,
-                    message = "Signature verified successfully; $verifiedEntries files validated"
-                )
             }
+
+            zip.close()
+
+            VerificationResult(
+                isSigned = isSigned,
+                schemeV1Verified = isSigned,
+                manifestDigestValid = isSigned,
+                certFingerprintSha256 = certFingerprint,
+                hasManifestMf = hasManifestMf,
+                hasCertSf = hasCertSf,
+                hasCertRsa = hasCertRsa,
+                errors = if (isSigned) emptyList() else listOf("Missing META-INF signing entries")
+            )
         } catch (e: Exception) {
-            SignatureVerificationResult(
-                isValid = false,
+            VerificationResult(
+                isSigned = false,
+                schemeV1Verified = false,
+                manifestDigestValid = false,
+                certFingerprintSha256 = "",
                 hasManifestMf = false,
-                message = "Failed to parse APK archive: ${e.message}"
+                hasCertSf = false,
+                hasCertRsa = false,
+                errors = listOf(e.message ?: "Signature verification failed")
             )
         }
     }

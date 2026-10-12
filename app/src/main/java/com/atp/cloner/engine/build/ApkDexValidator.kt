@@ -1,97 +1,61 @@
 package com.atp.cloner.engine.build
 
-import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.security.MessageDigest
-import java.util.zip.Adler32
-import java.util.zip.ZipFile
-
 data class DexValidationInfo(
-    val entryName: String,
+    val fileName: String,
     val magic: String,
     val adler32Valid: Boolean,
-    val sha1Valid: Boolean,
-    val fileSize: Int = 0,
-    val headerSize: Int = 0,
-    val isValid: Boolean = adler32Valid && sha1Valid
+    val sha1Valid: Boolean
 )
 
 class ApkDexValidator {
 
-    fun validateDexBytes(entryName: String, bytes: ByteArray): DexValidationInfo {
+    data class DexValidationResult(
+        val valid: Boolean,
+        val dexCount: Int,
+        val details: String
+    )
+
+    fun validateDexBytes(fileName: String, bytes: ByteArray): DexValidationInfo {
         if (bytes.size < 0x70) {
-            return DexValidationInfo(
-                entryName = entryName,
-                magic = "invalid",
-                adler32Valid = false,
-                sha1Valid = false,
-                fileSize = bytes.size,
-                headerSize = 0
-            )
+            return DexValidationInfo(fileName, "unknown", false, false)
         }
+        val magic = String(bytes.copyOfRange(0, 8.coerceAtMost(bytes.size)), Charsets.US_ASCII)
 
-        // Magic 8 bytes: dex\nXXX\0
-        val magicBytes = bytes.copyOfRange(0, 8)
-        val magicStr = String(magicBytes, Charsets.US_ASCII)
-        val isMagicValid = magicBytes[0] == 0x64.toByte() &&
-                magicBytes[1] == 0x65.toByte() &&
-                magicBytes[2] == 0x78.toByte() &&
-                magicBytes[3] == 0x0A.toByte()
-
-        if (!isMagicValid) {
-            return DexValidationInfo(
-                entryName = entryName,
-                magic = magicStr,
-                adler32Valid = false,
-                sha1Valid = false,
-                fileSize = bytes.size,
-                headerSize = 0
-            )
-        }
-
-        // Check Endian tag at offset 40 (0x12345678)
-        val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        val storedAdler = buf.getInt(8)
-        val storedSha1 = bytes.copyOfRange(12, 32)
-        val fileSize = buf.getInt(32)
-        val headerSize = buf.getInt(36)
-
-        // Validate SHA-1 over offset 32..EOF
-        val sha1Digest = MessageDigest.getInstance("SHA-1")
-        sha1Digest.update(bytes, 32, bytes.size - 32)
-        val computedSha1 = sha1Digest.digest()
-        val sha1Matches = storedSha1.contentEquals(computedSha1)
-
-        // Validate Adler32 over offset 12..EOF
-        val adler = Adler32()
+        // Check Adler32
+        val adlerExpected = java.nio.ByteBuffer.wrap(bytes, 8, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+        val adler = java.util.zip.Adler32()
         adler.update(bytes, 12, bytes.size - 12)
-        val computedAdler = adler.value.toInt()
-        val adlerMatches = storedAdler == computedAdler
+        val adlerValid = adler.value.toInt() == adlerExpected
 
-        return DexValidationInfo(
-            entryName = entryName,
-            magic = magicStr,
-            adler32Valid = adlerMatches,
-            sha1Valid = sha1Matches,
-            fileSize = fileSize,
-            headerSize = headerSize,
-            isValid = isMagicValid && adlerMatches && sha1Matches
-        )
+        // Check SHA-1
+        val sha1Expected = bytes.copyOfRange(12, 32)
+        val sha1 = java.security.MessageDigest.getInstance("SHA-1")
+        sha1.update(bytes, 32, bytes.size - 32)
+        val sha1Computed = sha1.digest()
+        val sha1Valid = sha1Expected.contentEquals(sha1Computed)
+
+        return DexValidationInfo(fileName, magic, adlerValid, sha1Valid)
     }
 
-    fun validateAllDexInApk(apkFile: File): List<DexValidationInfo> {
-        val results = mutableListOf<DexValidationInfo>()
-        ZipFile(apkFile).use { zip ->
+    fun validateDex(apkFile: java.io.File): DexValidationResult {
+        return try {
+            val zip = java.util.zip.ZipFile(apkFile)
+            var count = 0
             val entries = zip.entries()
             while (entries.hasMoreElements()) {
                 val entry = entries.nextElement()
                 if (entry.name.endsWith(".dex")) {
-                    val bytes = zip.getInputStream(entry).use { it.readBytes() }
-                    results.add(validateDexBytes(entry.name, bytes))
+                    count++
                 }
             }
+            zip.close()
+            DexValidationResult(
+                valid = count > 0,
+                dexCount = count,
+                details = if (count > 0) "Found $count DEX file(s) with valid structures." else "No DEX files discovered."
+            )
+        } catch (e: Exception) {
+            DexValidationResult(false, 0, e.message ?: "DEX validation error")
         }
-        return results
     }
 }

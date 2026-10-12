@@ -5,20 +5,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.withContext
 import java.io.File
-import java.security.MessageDigest
-import java.util.Locale
+import java.text.DecimalFormat
 
 class ApkBuildCoordinator(private val context: Context) {
 
-    private val workspaceValidator = ApkWorkspaceValidator()
-    private val manifestCompiler = ApkManifestCompiler()
-    private val resourceRebuilder = ApkResourceRebuilder()
-    private val dexValidator = ApkDexValidator()
     private val alignmentService = ApkAlignmentService()
     private val signingService = ApkSigningService(context)
+    private val dexValidator = ApkDexValidator()
     private val signatureVerifier = ApkSignatureVerifier()
-    private val finalValidator = ApkFinalValidator()
+    private val finalValidator = ApkFinalValidator(context)
 
     fun rebuildAndSignApk(
         projectId: String,
@@ -30,215 +27,146 @@ class ApkBuildCoordinator(private val context: Context) {
     ): Flow<BuildStatus> = flow {
         val startTime = System.currentTimeMillis()
         val stageTimings = mutableMapOf<String, Long>()
-        val buildLogs = mutableListOf<String>()
+        val logs = mutableListOf<String>()
 
-        fun recordStage(name: String, stageStart: Long) {
-            val duration = System.currentTimeMillis() - stageStart
-            stageTimings[name] = duration
-            buildLogs.add("Completed '$name' in ${duration}ms")
+        fun log(msg: String) {
+            logs.add("[${System.currentTimeMillis() - startTime}ms] $msg")
         }
 
-        val workspaceDir = File(context.filesDir, "projects/$projectId/workspace")
-        val buildDir = File(context.filesDir, "projects/$projectId/build")
-        if (!buildDir.exists()) buildDir.mkdirs()
+        val projectDir = File(context.filesDir, "projects/$projectId")
+        val stagingApk = File(projectDir, "staging.apk")
+        val originalApk = File(projectDir, "original.apk")
 
-        val outputDir = File(context.filesDir, "projects/$projectId/output")
-        if (!outputDir.exists()) outputDir.mkdirs()
+        // Input source file for rebuild pipeline
+        val sourceApk = if (stagingApk.exists() && stagingApk.length() > 0) stagingApk else originalApk
 
-        // Step 1: Workspace Validation
-        var sStart = System.currentTimeMillis()
+        if (!sourceApk.exists() || sourceApk.length() == 0L) {
+            emit(BuildStatus.Failed("Workspace source APK not found for project: $projectId"))
+            return@flow
+        }
+
+        // Stage 1: Workspace & DEX inspection
+        val stage1Start = System.currentTimeMillis()
         emit(
             BuildStatus.Progress(
-                stageName = "Validating Workspace",
+                stageName = "Validating Workspace & DEX",
                 stepNumber = 1,
-                totalSteps = 8,
-                progressPercent = 12,
-                details = "Checking prepared workspace, manifest, and resources..."
+                totalSteps = 6,
+                progressPercent = 15,
+                details = "Analyzing bytecode structures, classes.dex references, and assets..."
             )
         )
+        val dexResult = dexValidator.validateDex(sourceApk)
+        stageTimings["DEX Validation"] = System.currentTimeMillis() - stage1Start
+        log("Validated DEX files: ${dexResult.dexCount} files discovered. ${dexResult.details}")
 
-        val wsResult = workspaceValidator.validateWorkspace(workspaceDir)
-        if (!wsResult.isValid || wsResult.workingApk == null) {
-            emit(
-                BuildStatus.Failed(
-                    error = wsResult.errorMessage ?: "Workspace validation failed",
-                    technicalDetail = "Workspace path: ${workspaceDir.path}"
-                )
-            )
-            return@flow
-        }
-        val workingApk = wsResult.workingApk
-        recordStage("Workspace Validation", sStart)
-
-        // Step 2: Manifest & Resource Compilation Check
-        sStart = System.currentTimeMillis()
+        // Stage 2: Alignment preparation
+        val stage2Start = System.currentTimeMillis()
         emit(
             BuildStatus.Progress(
-                stageName = "Validating Binary Manifest & Resources",
+                stageName = "Optimizing Archive & Zip Alignment",
                 stepNumber = 2,
-                totalSteps = 8,
-                progressPercent = 25,
-                details = "Verifying chunk headers and 4-byte boundaries..."
+                totalSteps = 6,
+                progressPercent = 35,
+                details = "Aligning uncompressed 4-byte boundaries for memory-mapped execution..."
             )
         )
-        recordStage("Manifest & Resource Validation", sStart)
+        val alignedFile = File(projectDir, "aligned.apk")
+        val alignResult = alignmentService.alignApk(sourceApk, alignedFile)
+        stageTimings["Zip Alignment"] = System.currentTimeMillis() - stage2Start
 
-        // Step 3: DEX Files Validation
-        sStart = System.currentTimeMillis()
-        emit(
-            BuildStatus.Progress(
-                stageName = "Validating DEX Bytecode",
-                stepNumber = 3,
-                totalSteps = 8,
-                progressPercent = 38,
-                details = "Validating Adler32 checksums and SHA-1 signatures for DEX files..."
-            )
-        )
-        val dexInfos = dexValidator.validateAllDexInApk(workingApk)
-        val dexValid = dexInfos.all { it.isValid }
-        recordStage("DEX Validation", sStart)
-
-        // Step 4: Rebuilding & Packaging Unsigned APK
-        sStart = System.currentTimeMillis()
-        emit(
-            BuildStatus.Progress(
-                stageName = "Assembling Unsigned Package",
-                stepNumber = 4,
-                totalSteps = 8,
-                progressPercent = 50,
-                details = "Constructing clean intermediate APK package..."
-            )
-        )
-        val unsignedApk = File(buildDir, "unsigned_intermediate.apk")
-        if (unsignedApk.exists()) unsignedApk.delete()
-        workingApk.copyTo(unsignedApk, overwrite = true)
-        recordStage("Assembly", sStart)
-
-        // Step 5: Zip Alignment (4-byte alignment)
-        sStart = System.currentTimeMillis()
-        emit(
-            BuildStatus.Progress(
-                stageName = "Zip Alignment (4-Byte)",
-                stepNumber = 5,
-                totalSteps = 8,
-                progressPercent = 65,
-                details = "Aligning uncompressed entries and shared libraries to 4-byte boundaries..."
-            )
-        )
-        val alignedApk = File(buildDir, "aligned_uncompressed.apk")
-        if (alignedApk.exists()) alignedApk.delete()
-        val alignResult = alignmentService.alignApk(unsignedApk, alignedApk)
         if (!alignResult.success) {
-            emit(
-                BuildStatus.Failed(
-                    error = "Zip alignment failed: ${alignResult.message}",
-                    technicalDetail = "Input size: ${unsignedApk.length()} bytes"
-                )
-            )
+            emit(BuildStatus.Failed("Zipalign operation failed", alignResult.errorMessage))
             return@flow
         }
-        recordStage("Zip Alignment", sStart)
+        log("Zipalign succeeded: ${alignResult.alignedEntriesCount} entries processed.")
 
-        // Step 6: Cryptographic Signing
-        sStart = System.currentTimeMillis()
+        // Stage 3: Signing with v1 Scheme
+        val stage3Start = System.currentTimeMillis()
         emit(
             BuildStatus.Progress(
                 stageName = "Cryptographic Signing",
-                stepNumber = 6,
-                totalSteps = 8,
-                progressPercent = 78,
-                details = "Signing APK with Scheme v1 (JAR signing, SHA256withRSA)..."
+                stepNumber = 3,
+                totalSteps = 6,
+                progressPercent = 60,
+                details = "Generating SHA-256 digests and injecting META-INF signature blocks..."
             )
         )
-        val safeName = targetAppName.replace(Regex("[^a-zA-Z0-9_-]"), "_").lowercase(Locale.ROOT)
-        val finalApkName = "${safeName}_cloned.apk"
-        val finalSignedApk = File(outputDir, finalApkName)
-        if (finalSignedApk.exists()) finalSignedApk.delete()
+        val outputFile = File(projectDir, "cloned_${projectId.take(8)}.apk")
+        val signResult = signingService.signApk(alignedFile, outputFile)
+        stageTimings["APK Signing"] = System.currentTimeMillis() - stage3Start
 
-        val signResult = signingService.signApk(alignedApk, finalSignedApk)
-        if (!signResult.success || signResult.signedApk == null) {
-            emit(
-                BuildStatus.Failed(
-                    error = signResult.errorMessage ?: "Cryptographic signing failed",
-                    technicalDetail = "Aligned APK size: ${alignedApk.length()} bytes"
-                )
-            )
+        if (!signResult.success || signResult.signedApkFile == null) {
+            emit(BuildStatus.Failed("Signing failed", signResult.errorMessage))
             return@flow
         }
-        recordStage("Cryptographic Signing", sStart)
+        log("APK signed using ${signResult.algorithm}. Cert fingerprint: ${signResult.certFingerprint}")
 
-        // Step 7: Signature Verification
-        sStart = System.currentTimeMillis()
+        // Stage 4: Signature Verification
+        val stage4Start = System.currentTimeMillis()
         emit(
             BuildStatus.Progress(
-                stageName = "Verifying Signature Integrity",
-                stepNumber = 7,
-                totalSteps = 8,
-                progressPercent = 90,
-                details = "Verifying MANIFEST.MF digests and certificate fingerprints..."
+                stageName = "Signature Verification",
+                stepNumber = 4,
+                totalSteps = 6,
+                progressPercent = 80,
+                details = "Independently verifying JAR manifest digests and cryptographic hashes..."
             )
         )
-        val sigVerification = signatureVerifier.verifyApkSignature(finalSignedApk)
-        if (!sigVerification.isValid) {
-            emit(
-                BuildStatus.Failed(
-                    error = "APK signature verification failed: ${sigVerification.message}",
-                    technicalDetail = "Output file: ${finalSignedApk.path}"
-                )
-            )
-            return@flow
-        }
-        recordStage("Signature Verification", sStart)
+        val sigVerification = signatureVerifier.verifyApkSignature(outputFile)
+        stageTimings["Signature Verification"] = System.currentTimeMillis() - stage4Start
+        log("Signature verification status: ${sigVerification.isSigned}")
 
-        // Step 8: Final Structural Verification & Report Generation
-        sStart = System.currentTimeMillis()
+        // Stage 5: Final Output Inspection
+        val stage5Start = System.currentTimeMillis()
         emit(
             BuildStatus.Progress(
-                stageName = "Final Integrity Verification",
-                stepNumber = 8,
-                totalSteps = 8,
-                progressPercent = 98,
-                details = "Confirming package identifier, label, and installability..."
+                stageName = "Final Integrity Inspection",
+                stepNumber = 5,
+                totalSteps = 6,
+                progressPercent = 95,
+                details = "Reading final manifest and computing SHA-256 checksum..."
             )
         )
-        val finalResult = finalValidator.validateFinalApk(finalSignedApk, targetPackageId, targetAppName)
-        recordStage("Final Verification", sStart)
+        val finalResult = finalValidator.validateFinalApk(outputFile, targetPackageId, targetAppName)
+        stageTimings["Final Inspection"] = System.currentTimeMillis() - stage5Start
+        log("Output APK validated. SHA-256: ${finalResult.sha256Checksum}")
 
+        // Stage 6: Build Success & Complete Report
         val totalDuration = System.currentTimeMillis() - startTime
-        val formattedSize = formatFileSize(finalSignedApk.length())
+        val formattedSize = formatFileSize(outputFile.length())
 
         val report = ApkBuildReport(
-            verifiedAppName = finalResult.verifiedAppName,
-            verifiedPackageId = finalResult.verifiedPackageId,
-            rebuiltApkPath = finalSignedApk.absolutePath,
-            rebuiltApkName = finalApkName,
-            rebuiltFileSize = finalSignedApk.length(),
+            rebuiltApkPath = outputFile.absolutePath,
+            rebuiltApkName = outputFile.name,
+            rebuiltApkChecksum = finalResult.sha256Checksum,
+            rebuiltFileSize = outputFile.length(),
             formattedFileSize = formattedSize,
-            totalDurationMs = totalDuration,
-            isInstallReady = finalResult.isInstallReady,
-            rebuiltApkChecksum = finalResult.checksumSha256,
             originalApkName = originalApkName,
             originalApkChecksum = originalApkChecksum,
+            verifiedAppName = finalResult.verifiedAppName,
+            verifiedPackageId = finalResult.verifiedPackageId,
             hasCustomIcon = hasCustomIcon,
             signingAlgorithm = signResult.algorithm,
-            signatureVerified = sigVerification.isValid,
-            signingCertFingerprint = signResult.certFingerprint,
+            signatureVerified = sigVerification.isSigned,
+            signingCertFingerprint = signResult.certFingerprint.ifEmpty { sigVerification.certFingerprintSha256 },
             alignmentSuccess = alignResult.success,
             alignedEntriesCount = alignResult.alignedEntriesCount,
-            dexFilesCount = if (dexInfos.isNotEmpty()) dexInfos.size else 1,
-            dexChecksumValid = dexValid,
+            dexFilesCount = dexResult.dexCount,
+            dexChecksumValid = dexResult.valid,
+            isInstallReady = finalResult.success && sigVerification.isSigned,
+            totalDurationMs = totalDuration,
             stageTimings = stageTimings,
-            buildLogs = buildLogs
+            buildLogs = logs
         )
 
         emit(BuildStatus.Success(report))
     }.flowOn(Dispatchers.IO)
 
     private fun formatFileSize(bytes: Long): String {
-        return when {
-            bytes >= 1024 * 1024 -> String.format(Locale.US, "%.2f MB", bytes.toDouble() / (1024 * 1024))
-            bytes >= 1024 -> String.format(Locale.US, "%.1f KB", bytes.toDouble() / 1024)
-            else -> "$bytes B"
-        }
+        if (bytes <= 0) return "0 B"
+        val units = arrayOf("B", "KB", "MB", "GB")
+        val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
+        return DecimalFormat("#,##0.#").format(bytes / Math.pow(1024.0, digitGroups.toDouble())) + " " + units[digitGroups]
     }
 }

@@ -95,6 +95,7 @@ fun MainAppContent(viewModel: MainViewModel) {
             Screen.APK_DETAILS -> viewModel.navigateTo(Screen.HOME)
             Screen.COMPATIBILITY_REPORT -> viewModel.navigateTo(Screen.APK_DETAILS)
             Screen.MODIFICATION_REPORT -> viewModel.navigateTo(Screen.HOME)
+            Screen.INSTALLED_APPS -> viewModel.navigateTo(Screen.HOME)
             Screen.HISTORY, Screen.SIGNING_PREP, Screen.ABOUT -> viewModel.navigateTo(Screen.SETTINGS)
             else -> viewModel.navigateTo(Screen.HOME)
         }
@@ -151,7 +152,17 @@ fun MainAppContent(viewModel: MainViewModel) {
                     errorMessage = errorMessage,
                     onImportFile = { uri, name -> viewModel.importApk(uri, name) },
                     onLoadSample = { viewModel.loadSampleApk() },
+                    onNavigateToInstalledApps = { viewModel.navigateTo(Screen.INSTALLED_APPS) },
                     onBack = { viewModel.navigateTo(Screen.HOME) },
+                    modifier = Modifier.padding(innerPadding)
+                )
+            }
+            Screen.INSTALLED_APPS -> {
+                com.atp.cloner.ui.screens.InstalledAppsScreen(
+                    onSelectApp = { appInfo -> viewModel.importInstalledApp(appInfo) },
+                    onBack = { viewModel.navigateTo(Screen.HOME) },
+                    onManualImportFallback = { viewModel.navigateTo(Screen.IMPORT) },
+                    isProcessing = isProcessing,
                     modifier = Modifier.padding(innerPadding)
                 )
             }

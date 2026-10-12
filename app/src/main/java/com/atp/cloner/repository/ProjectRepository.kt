@@ -187,6 +187,85 @@ class ProjectRepository(private val context: Context) {
         report
     }
 
+    suspend fun importInstalledApp(appInfo: com.atp.cloner.data.model.InstalledAppInfo): ProjectEntity = withContext(Dispatchers.IO) {
+        val projectId = UUID.randomUUID().toString()
+        val projectDir = File(context.filesDir, "projects/$projectId")
+        if (!projectDir.exists()) projectDir.mkdirs()
+
+        val extractionService = com.atp.cloner.engine.ApkExtractionService(context)
+        val extractionResult = extractionService.extractInstalledApp(appInfo, projectDir)
+        if (!extractionResult.success || extractionResult.extractedApkFile == null) {
+            throw IllegalStateException(extractionResult.errorMessage ?: "Failed to extract installed app APK")
+        }
+
+        val localApk = extractionResult.extractedApkFile
+        val sha256 = extractionResult.sha256Checksum
+
+        val report = discoveryEngine.discoverMetadata(localApk, projectId)
+        reportCache[projectId] = report
+
+        var iconPath: String? = null
+        report.launcherIconDiscovery.previewIconBytes?.let { bytes ->
+            val iconFile = File(projectDir, "icon.png")
+            FileOutputStream(iconFile).use { it.write(bytes) }
+            iconPath = iconFile.absolutePath
+        }
+
+        val project = ProjectEntity(
+            id = projectId,
+            projectName = appInfo.appName.ifEmpty { report.appNameDiscovery.resolvedDefaultLabel },
+            originalFileName = "${appInfo.packageName}.apk",
+            originalFilePath = localApk.absolutePath,
+            originalFileSize = localApk.length(),
+            originalSha256 = sha256,
+            originalPackageName = appInfo.packageName,
+            originalAppLabel = appInfo.appName,
+            originalVersionName = appInfo.versionName,
+            originalVersionCode = appInfo.versionCode,
+            iconCachedPath = iconPath,
+            hasAdaptiveIcon = report.launcherIconDiscovery.resolvedIconType == "Adaptive XML",
+            dexFileCount = report.packageDiscovery.dexReferences.map { it.dexFileName }.distinct().size.coerceAtLeast(1),
+            nativeAbis = report.packageDiscovery.nativeLibraries.map { it.abi }.distinct().joinToString(", ").ifEmpty { "Universal" },
+            hasSignature = true,
+            certFingerprint = null,
+            decompilationStatus = "Discovered",
+            enableNameChange = false,
+            modifiedAppName = appInfo.appName,
+            enablePackageChange = false,
+            modifiedPackageName = "${appInfo.packageName}.clone",
+            enableIconChange = false,
+            customIconPath = null,
+            lastStatus = if (appInfo.isSplitApk) "Extracted (Split APKs detected: ${appInfo.splitCount})" else "Extracted",
+            createdAt = System.currentTimeMillis(),
+            updatedAt = System.currentTimeMillis()
+        )
+
+        projectDao.insertProject(project)
+
+        val logs = report.scanLogs.map { msg ->
+            ProcessingLogEntity(
+                projectId = projectId,
+                stage = "Installed App Discovery",
+                message = msg,
+                status = "INFO"
+            )
+        }.toMutableList()
+
+        if (appInfo.isSplitApk) {
+            logs.add(
+                ProcessingLogEntity(
+                    projectId = projectId,
+                    stage = "Split APK Detection",
+                    message = "Application has ${appInfo.splitCount} split APKs: ${appInfo.splitNames.joinToString(", ")}. Base APK extracted.",
+                    status = "WARNING"
+                )
+            )
+        }
+        logDao.insertLogs(logs)
+
+        project
+    }
+
     suspend fun updateProject(project: ProjectEntity) = projectDao.updateProject(project)
 
     suspend fun deleteProject(project: ProjectEntity) = withContext(Dispatchers.IO) {

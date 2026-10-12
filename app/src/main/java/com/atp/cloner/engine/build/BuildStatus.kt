@@ -4,7 +4,7 @@ sealed class BuildStatus {
     data class Progress(
         val stageName: String,
         val stepNumber: Int,
-        val totalSteps: Int = 8,
+        val totalSteps: Int = 6,
         val progressPercent: Int,
         val details: String
     ) : BuildStatus()

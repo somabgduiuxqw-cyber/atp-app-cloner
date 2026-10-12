@@ -36,6 +36,7 @@ import java.io.File
 enum class Screen {
     HOME,
     IMPORT,
+    INSTALLED_APPS,
     APK_DETAILS,
     DISCOVERY,
     CLONE_CONFIG,
@@ -157,6 +158,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _currentScreen.value = Screen.APK_DETAILS
             } catch (e: Exception) {
                 _errorMessage.value = "Failed to import APK: ${e.localizedMessage ?: e.message}"
+            } finally {
+                _isProcessing.value = false
+            }
+        }
+    }
+
+    fun importInstalledApp(appInfo: com.atp.cloner.data.model.InstalledAppInfo) {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            _errorMessage.value = null
+            try {
+                val project = repository.importInstalledApp(appInfo)
+                _activeProject.value = project
+                val report = repository.getDiscoveryReport(project.id)
+                _discoveryReport.value = report
+
+                _cloneConfig.value = CloneConfiguration(
+                    changeAppName = false,
+                    newAppName = appInfo.appName.ifEmpty { report?.appNameDiscovery?.resolvedDefaultLabel ?: "" },
+                    changePackageId = false,
+                    newPackageId = "${appInfo.packageName}.clone",
+                    changeLauncherIcon = false
+                )
+                _currentScreen.value = Screen.APK_DETAILS
+            } catch (e: Exception) {
+                _errorMessage.value = "Failed to extract installed application: ${e.localizedMessage ?: e.message}"
             } finally {
                 _isProcessing.value = false
             }

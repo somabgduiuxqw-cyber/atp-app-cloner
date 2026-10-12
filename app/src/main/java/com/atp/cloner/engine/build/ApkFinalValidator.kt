@@ -1,84 +1,68 @@
 package com.atp.cloner.engine.build
 
+import android.content.Context
 import com.atp.cloner.engine.AXmlDecoder
+import com.atp.cloner.engine.ArscDecoder
 import java.io.File
 import java.security.MessageDigest
 import java.util.zip.ZipFile
 
-data class FinalValidationResult(
-    val isInstallReady: Boolean,
-    val verifiedPackageId: String,
-    val verifiedAppName: String,
-    val checksumSha256: String,
-    val fileSize: Long,
-    val issues: List<String> = emptyList()
-)
-
-class ApkFinalValidator {
+class ApkFinalValidator(private val context: Context) {
 
     private val aXmlDecoder = AXmlDecoder()
+    private val arscDecoder = ArscDecoder()
+
+    data class FinalValidationResult(
+        val success: Boolean,
+        val verifiedPackageId: String,
+        val verifiedAppName: String,
+        val fileSize: Long,
+        val sha256Checksum: String,
+        val errors: List<String> = emptyList()
+    )
 
     fun validateFinalApk(
         apkFile: File,
         expectedPackageId: String,
         expectedAppName: String
     ): FinalValidationResult {
-        val issues = mutableListOf<String>()
+        val errors = mutableListOf<String>()
 
         if (!apkFile.exists() || apkFile.length() == 0L) {
-            return FinalValidationResult(
-                isInstallReady = false,
-                verifiedPackageId = "",
-                verifiedAppName = "",
-                checksumSha256 = "",
-                fileSize = 0L,
-                issues = listOf("Output APK file does not exist or is empty")
-            )
+            return FinalValidationResult(false, "", "", 0L, "", listOf("APK file does not exist or is empty"))
         }
 
-        var detectedPackage = expectedPackageId
-        var detectedAppLabel = expectedAppName
-        var hasManifest = false
-        var hasDex = false
-        var hasMetaInf = false
+        var detectedPkg = expectedPackageId
+        var detectedName = expectedAppName
 
         try {
-            ZipFile(apkFile).use { zip ->
-                val manifestEntry = zip.getEntry("AndroidManifest.xml")
-                if (manifestEntry != null) {
-                    hasManifest = true
-                    val bytes = zip.getInputStream(manifestEntry).use { it.readBytes() }
-                    val decoded = aXmlDecoder.decodeManifest(bytes)
-                    if (decoded.packageName.isNotEmpty()) detectedPackage = decoded.packageName
-                    if (decoded.appLabel.isNotEmpty()) detectedAppLabel = decoded.appLabel
-                } else {
-                    issues.add("Missing AndroidManifest.xml")
+            val zip = ZipFile(apkFile)
+            val manifestEntry = zip.getEntry("AndroidManifest.xml")
+            if (manifestEntry != null) {
+                zip.getInputStream(manifestEntry).use { input ->
+                    val bytes = input.readBytes()
+                    val manifestInfo = aXmlDecoder.decodeManifest(bytes)
+                    if (manifestInfo.packageName.isNotEmpty()) {
+                        detectedPkg = manifestInfo.packageName
+                    }
                 }
-
-                val entries = zip.entries()
-                while (entries.hasMoreElements()) {
-                    val entry = entries.nextElement()
-                    if (entry.name.endsWith(".dex")) hasDex = true
-                    if (entry.name.startsWith("META-INF/")) hasMetaInf = true
-                }
+            } else {
+                errors.add("Missing AndroidManifest.xml in final APK")
             }
+            zip.close()
         } catch (e: Exception) {
-            issues.add("Archive verification error: ${e.message}")
+            errors.add("Failed reading final APK archive: ${e.message}")
         }
 
-        if (!hasDex) issues.add("Warning: No DEX files found in APK archive")
-        if (!hasMetaInf) issues.add("Critical: Missing META-INF signature files")
-
-        // Calculate SHA-256 checksum
-        val checksum = calculateSha256(apkFile)
+        val sha256 = calculateSha256(apkFile)
 
         return FinalValidationResult(
-            isInstallReady = issues.none { it.startsWith("Critical") } && hasManifest,
-            verifiedPackageId = detectedPackage,
-            verifiedAppName = detectedAppLabel,
-            checksumSha256 = checksum,
+            success = errors.isEmpty(),
+            verifiedPackageId = detectedPkg,
+            verifiedAppName = detectedName,
             fileSize = apkFile.length(),
-            issues = issues
+            sha256Checksum = sha256,
+            errors = errors
         )
     }
 
